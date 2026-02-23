@@ -41,31 +41,28 @@ public class AIQuoteAgentService {
         logger.info("Step 1: Creating account...");
         String accountNumber = createAccount(customerInfo);
 
-        // 2. Create Submission
-        logger.info("Step 2: Creating submission...");
-        String jobNumber = createSubmission(accountNumber, customerInfo.getLineOfBusiness());
-
-        // 3. Generate coverage plan variations
-        logger.info("Step 3: Generating coverage plans...");
+        // 2. Generate coverage plan variations
+        logger.info("Step 2: Generating coverage plans...");
         List<CoveragePlan> plans = generateCoveragePlans(prefs);
 
-        // 4. Quote all plans in parallel
-        logger.info("Step 4: Quoting {} plans in parallel...", plans.size());
-        List<QuotedPlan> quotedPlans = quoteAllPlansParallel(jobNumber, plans, customerInfo);
+        // 3. Quote all plans in parallel (each creates its own submission + draft + quote)
+        logger.info("Step 3: Quoting {} plans in parallel...", plans.size());
+        List<QuotedPlan> quotedPlans = quoteAllPlansParallel(accountNumber, plans, customerInfo);
 
-        // 5. Build risk profile
-        logger.info("Step 5: Building user risk profile...");
+        // 4. Build risk profile
+        logger.info("Step 4: Building user risk profile...");
         UserProfile profile = buildUserProfile(customerInfo);
 
-        // 6. AI recommendations
-        logger.info("Step 6: Generating AI recommendations...");
+        // 5. AI recommendations
+        logger.info("Step 5: Generating AI recommendations...");
         List<QuoteRecommendation> recommendations =
                 recommendationEngine.analyzeAndRecommend(quotedPlans, profile, prefs);
 
         long elapsed = System.currentTimeMillis() - start;
         logger.info("Completed in {} ms", elapsed);
 
-        return buildResult(accountNumber, jobNumber, recommendations, elapsed);
+        String topJobNumber = recommendations.isEmpty() ? "" : recommendations.get(0).getJobNumber();
+        return buildResult(accountNumber, topJobNumber, recommendations, elapsed);
     }
 
     /** Bind the policy selected by the user */
@@ -73,6 +70,8 @@ public class AIQuoteAgentService {
         logger.info("Binding policy for JobNumber: {}", jobNumber);
         PolicyIssuanceRequest req = new PolicyIssuanceRequest();
         req.setJobNumber(jobNumber);
+        req.setBillingMethod("DirectBill");
+        req.setPaymentPlanId("bc:1");
         PolicyIssuanceResponse resp = pcClient.issuePolicy(req);
         logger.info("Policy issued: {}", resp.getPolicyNumber());
         return resp.getPolicyNumber();
@@ -112,18 +111,6 @@ public class AIQuoteAgentService {
         return resp.getAccountnumber();
     }
 
-    private String createSubmission(String accountNumber, String lob) throws IOException {
-        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
-        SubmissionRequest req = new SubmissionRequest();
-        req.setAccountNumber(accountNumber);
-        req.setEffectiveDate(sdf.format(new Date()));
-        req.setProducerCode("100-002541");
-        req.setProductCode("PersonalAuto");
-        SubmissionResponse resp = pcClient.createSubmission(req);
-        logger.info("Submission created: JobNumber={}, PolicyNumber={}", resp.getJobNumber(), resp.getPolicyNumber());
-        return resp.getJobNumber();
-    }
-
     private List<CoveragePlan> generateCoveragePlans(UserPreferences prefs) {
         List<CoveragePlan> plans = prefs.getPreferredTier() != null
                 ? coverageEngine.generateCustomPlans(prefs)
@@ -139,12 +126,21 @@ public class AIQuoteAgentService {
         return valid;
     }
 
-    private List<QuotedPlan> quoteAllPlansParallel(String jobNumber,
+    private List<QuotedPlan> quoteAllPlansParallel(String accountNumber,
                                                     List<CoveragePlan> plans,
                                                     CustomerInfo c) throws Exception {
-        List<Future<QuotedPlan>> futures = new ArrayList<>();
+        // Phase 1: Create all submissions sequentially to avoid PC account-level locking
+        List<String> jobNumbers = new ArrayList<>();
         for (CoveragePlan plan : plans)
+            jobNumbers.add(createSubmissionWithPA(accountNumber, plan, c));
+
+        // Phase 2: Quote each submission in parallel
+        List<Future<QuotedPlan>> futures = new ArrayList<>();
+        for (int i = 0; i < plans.size(); i++) {
+            final String jobNumber = jobNumbers.get(i);
+            final CoveragePlan plan = plans.get(i);
             futures.add(executor.submit(() -> quoteSinglePlan(jobNumber, plan, c)));
+        }
 
         List<QuotedPlan> results = new ArrayList<>();
         for (int i = 0; i < futures.size(); i++) {
@@ -160,15 +156,51 @@ public class AIQuoteAgentService {
         return results;
     }
 
+    private String createSubmissionWithPA(String accountNumber, CoveragePlan plan, CustomerInfo c) throws IOException {
+        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
+        SubmissionRequest req = new SubmissionRequest();
+        req.setAccountNumber(accountNumber);
+        req.setEffectiveDate(sdf.format(new Date()));
+        req.setProducerCode("100-002541");
+        req.setProductCode("PersonalAuto");
+        SubmissionResponse resp = pcClient.createSubmission(req);
+        logger.info("Submission created for plan '{}': JobNumber={}", plan.getPlanName(), resp.getJobNumber());
+        return resp.getJobNumber();
+    }
+
     private QuotedPlan quoteSinglePlan(String jobNumber, CoveragePlan plan, CustomerInfo c) throws IOException {
+        SubmissionQuoteRequest req = buildQuoteRequest(jobNumber, plan, c);
+        // Transition New → Draft; log a warning if the endpoint is not yet implemented on this PC instance
+        try {
+            pcClient.draftSubmission(req);
+        } catch (IOException e) {
+            logger.warn("Draft step unavailable ({}); attempting quote directly - PC may need a draft-submission endpoint", e.getMessage().split("\n")[0]);
+        }
+        SubmissionQuoteResponse resp = pcClient.quoteSubmission(req);
+
+        QuotedPlan qp = new QuotedPlan();
+        qp.setPlan(plan);
+        qp.setJobNumber(jobNumber);
+        qp.setTotalPremium(resp.getQuoteDetails().getTotalPremium());
+        qp.setTotalCost(resp.getQuoteDetails().getTotalCost());
+        qp.setCosts(resp.getQuoteDetails().getCosts());
+        logger.debug("Plan '{}' quoted at ${}", plan.getPlanName(), qp.getTotalPremium());
+        return qp;
+    }
+
+    private SubmissionQuoteRequest buildQuoteRequest(String jobNumber, CoveragePlan plan, CustomerInfo c) {
         SubmissionQuoteRequest req = new SubmissionQuoteRequest();
         req.setJobNumber(jobNumber);
 
         PolicyDetails pd = new PolicyDetails();
         pd.setTermType("Annual");
-        pd.setEffectiveDate(c.getDesiredEffectiveDate());
         req.setPolicyDetails(pd);
 
+        req.setPaDetails(buildPADetails(plan, c));
+        return req;
+    }
+
+    private PersonalAutoDetails buildPADetails(CoveragePlan plan, CustomerInfo c) {
         PersonalAutoDetails paDetails = new PersonalAutoDetails();
         paDetails.setDrivers(c.getDrivers());
         paDetails.setVehicles(c.getVehicles());
@@ -179,18 +211,7 @@ public class AIQuoteAgentService {
         cov.setCollisionDeductible(plan.getCollisionDeductible());
         cov.setCompDeductible(plan.getCompDeductible());
         paDetails.setCoverages(cov);
-        req.setPaDetails(paDetails);
-
-        SubmissionQuoteResponse resp = pcClient.quoteSubmission(req);
-
-        QuotedPlan qp = new QuotedPlan();
-        qp.setPlan(plan);
-        qp.setJobNumber(resp.getJobNumber());
-        qp.setTotalPremium(resp.getQuoteDetails().getTotalPremium());
-        qp.setTotalCost(resp.getQuoteDetails().getTotalCost());
-        qp.setCosts(resp.getQuoteDetails().getCosts());
-        logger.debug("Plan '{}' quoted at ${}", plan.getPlanName(), qp.getTotalPremium());
-        return qp;
+        return paDetails;
     }
 
     private UserProfile buildUserProfile(CustomerInfo c) {

@@ -99,6 +99,9 @@ public class PolicyCenterRestClient {
                 com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES,
                 false   // tolerate extra fields returned by PC that are not in our model
         );
+        this.objectMapper.setSerializationInclusion(
+                com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL
+        );
 
         logger.info("PolicyCenterRestClient initialised – {}, user={}",
                 config.getBaseUrl(), config.getUsername());
@@ -117,6 +120,13 @@ public class PolicyCenterRestClient {
     public SubmissionResponse createSubmission(SubmissionRequest request) throws IOException {
         logger.info("Creating submission for account: {}", request.getAccountNumber());
         return post(config.getBaseUrl() + "/submission/v1/new-submission",
+                request, SubmissionResponse.class);
+    }
+
+    /** POST /submission/v1/draft-submission */
+    public SubmissionResponse draftSubmission(SubmissionQuoteRequest request) throws IOException {
+        logger.info("Drafting submission: JobNumber={}", request.getJobNumber());
+        return post(config.getBaseUrl() + "/submission/v1/draft-submission",
                 request, SubmissionResponse.class);
     }
 

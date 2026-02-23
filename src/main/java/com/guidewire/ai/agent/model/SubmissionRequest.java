@@ -38,6 +38,4 @@ public class SubmissionRequest {
     private String effectiveDate;
     private String producerCode;
     private String productCode;
-
-
 }

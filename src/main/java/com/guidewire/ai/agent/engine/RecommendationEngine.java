@@ -34,7 +34,7 @@ public class RecommendationEngine {
             else if (Boolean.TRUE.equals(recs.get(i).getIsLowestPrice()))     recs.get(i).setRecommendationLabel("Lowest Price Option");
             else if (Boolean.TRUE.equals(recs.get(i).getIsHighestCoverage())) recs.get(i).setRecommendationLabel("Maximum Protection");
         }
-        logger.info("Top recommendation: {}", recs.get(0).getPlanName());
+        if (!recs.isEmpty()) logger.info("Top recommendation: {}", recs.get(0).getPlanName());
         return recs;
     }
 
@@ -43,6 +43,7 @@ public class RecommendationEngine {
     private QuoteRecommendation scoreQuote(QuotedPlan quote, UserProfile profile,
                                             UserPreferences prefs, List<QuotedPlan> all) {
         QuoteRecommendation rec = new QuoteRecommendation();
+        rec.setJobNumber(quote.getJobNumber());
         rec.setPlanName(quote.getPlan().getPlanName());
         rec.setDescription(quote.getPlan().getDescription());
         rec.setPremium(quote.getTotalPremium());

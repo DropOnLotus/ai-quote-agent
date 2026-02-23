@@ -4,6 +4,7 @@ import java.util.List;
 
 public class QuoteRecommendation {
     private Integer rank;
+    private String jobNumber;
     private String planName;
     private String description;
     private Double premium;
@@ -29,6 +30,8 @@ public class QuoteRecommendation {
 
     public Integer getRank() { return rank; }
     public void setRank(Integer v) { this.rank = v; }
+    public String getJobNumber() { return jobNumber; }
+    public void setJobNumber(String v) { this.jobNumber = v; }
     public String getPlanName() { return planName; }
     public void setPlanName(String v) { this.planName = v; }
     public String getDescription() { return description; }
