@@ -1,0 +1,26 @@
+# Maven
+target/
+dependency-reduced-pom.xml
+*.class
+
+# Logs
+logs/
+*.log
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+.eclipse/
+*.classpath
+*.project
+*.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets (do not commit real credentials)
+# application.properties is committed with defaults only
